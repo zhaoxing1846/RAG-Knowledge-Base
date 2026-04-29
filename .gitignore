@@ -1,0 +1,20 @@
+# Secrets & API keys
+config.py
+.jwt_secret
+*.db
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Cache & data
+cache/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
