@@ -45,11 +45,37 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'user',
             created_at TEXT DEFAULT (datetime('now'))
         )
     """)
+    # 兼容旧数据库：如果 role 列不存在则添加
+    try:
+        conn.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # 列已存在
+    # 确保现有 admin 用户角色正确
+    conn.execute("UPDATE users SET role = 'admin' WHERE username = 'admin' AND (role IS NULL OR role = '')")
     conn.commit()
     conn.close()
+
+
+def _ensure_admin_exists():
+    """确保存在 admin 管理员账户（如没有则创建）"""
+    conn = _get_db()
+    try:
+        row = conn.execute("SELECT id FROM users WHERE username = ?", ("admin",)).fetchone()
+        if row is None:
+            password_hash = _hash_password("admin")
+            conn.execute(
+                "INSERT INTO users (username, password_hash, role) VALUES (?, ?, 'admin')",
+                ("admin", password_hash)
+            )
+            conn.commit()
+            print("[INIT] 管理员账户已创建：admin / admin（请尽快修改密码）")
+    finally:
+        conn.close()
 
 
 def _hash_password(password: str) -> str:
@@ -63,12 +89,15 @@ def register_user(username: str, password: str) -> dict:
         return {"success": False, "message": "用户名长度需在2-50字符之间"}
     if len(password) < 4:
         return {"success": False, "message": "密码长度不能少于4位"}
+    # 不允许注册 admin 用户名
+    if username.lower() == "admin":
+        return {"success": False, "message": "该用户名不允许注册"}
 
     conn = _get_db()
     try:
         password_hash = _hash_password(password)
         conn.execute(
-            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+            "INSERT INTO users (username, password_hash, role) VALUES (?, ?, 'user')",
             (username, password_hash)
         )
         conn.commit()
@@ -86,7 +115,7 @@ def login_user(username: str, password: str) -> dict:
     conn = _get_db()
     try:
         row = conn.execute(
-            "SELECT id, password_hash FROM users WHERE username = ?",
+            "SELECT id, password_hash, role FROM users WHERE username = ?",
             (username,)
         ).fetchone()
         if row is None:
@@ -95,7 +124,7 @@ def login_user(username: str, password: str) -> dict:
         if _hash_password(password) != row["password_hash"]:
             return {"success": False, "message": "用户名或密码错误"}
 
-        token = _create_jwt(row["id"], username)
+        token = _create_jwt(row["id"], username, row["role"])
         return {"success": True, "message": "登录成功", "token": token}
     finally:
         conn.close()
@@ -112,12 +141,13 @@ def _base64url_decode(s: str) -> bytes:
     return base64.urlsafe_b64decode(s)
 
 
-def _create_jwt(user_id: int, username: str) -> str:
+def _create_jwt(user_id: int, username: str, role: str = "user") -> str:
     secret = _get_jwt_secret()
     header = {"alg": "HS256", "typ": "JWT"}
     payload = {
         "sub": user_id,
         "username": username,
+        "role": role,
         "iat": int(time.time()),
         "exp": int(time.time()) + 7 * 24 * 3600
     }
@@ -166,7 +196,61 @@ def get_current_user(authorization: Optional[str]) -> Optional[dict]:
     payload = verify_jwt(token)
     if payload is None:
         return None
-    return {"user_id": payload["sub"], "username": payload.get("username", "unknown")}
+    return {
+        "user_id": payload["sub"],
+        "username": payload.get("username", "unknown"),
+        "role": payload.get("role", "user")
+    }
+
+
+def get_all_users() -> list:
+    """获取所有用户列表（仅管理员可用）"""
+    conn = _get_db()
+    try:
+        rows = conn.execute(
+            "SELECT id, username, role, created_at FROM users ORDER BY id"
+        ).fetchall()
+        return [{
+            "id": r["id"],
+            "username": r["username"],
+            "role": r["role"],
+            "created_at": r["created_at"]
+        } for r in rows]
+    finally:
+        conn.close()
+
+
+def update_user_role(user_id: int, new_role: str) -> dict:
+    """更新用户角色"""
+    if new_role not in ("user", "admin"):
+        return {"success": False, "message": "无效的角色"}
+    conn = _get_db()
+    try:
+        row = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+        if row is None:
+            return {"success": False, "message": "用户不存在"}
+        conn.execute("UPDATE users SET role = ? WHERE id = ?", (new_role, user_id))
+        conn.commit()
+        return {"success": True, "message": f"用户ID {user_id} 角色已更新为 {new_role}"}
+    finally:
+        conn.close()
+
+
+def delete_user(user_id: int) -> dict:
+    """删除用户"""
+    conn = _get_db()
+    try:
+        row = conn.execute("SELECT username FROM users WHERE id = ?", (user_id,)).fetchone()
+        if row is None:
+            return {"success": False, "message": "用户不存在"}
+        if row["username"] == "admin":
+            return {"success": False, "message": "不能删除超级管理员"}
+        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        conn.commit()
+        return {"success": True, "message": f"用户 {row['username']} 已删除"}
+    finally:
+        conn.close()
 
 
 init_db()
+_ensure_admin_exists()

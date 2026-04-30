@@ -190,6 +190,19 @@ class VectorStore:
         """文档数量"""
         return self.index.ntotal
     
+    def save(self):
+        """公开保存方法"""
+        self._save()
+
+    def list_documents(self) -> List[str]:
+        """获取所有文档文件名（去重）"""
+        sources = set()
+        for meta in self.metadatas:
+            src = meta.get("source", "")
+            if src:
+                sources.add(src)
+        return sorted(list(sources))
+
     def get_stats(self) -> Dict:
         """统计信息"""
         return {

@@ -20,7 +20,7 @@ import time
 import logging
 import json
 from typing import List, Optional
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -335,7 +335,7 @@ async def chat(req: ChatRequest):
 
 @app.post("/api/chat/stream")
 async def chat_stream(req: ChatRequest):
-    """流式对话 - 避免代理超时问题"""
+    """流式对话 - 逐 token 流式输出"""
     start_time = time.time()
     logger.info(f"[CHAT-STREAM] 新请求：问题长度={len(req.question)}")
 
@@ -382,19 +382,30 @@ async def chat_stream(req: ChatRequest):
             # 发送状态
             yield f"data: {json.dumps({'type': 'status', 'content': '正在生成回答...'})}\n\n"
 
-            # 调用LLM（同步，在executor中运行）
+            # 在独立线程中调用 LLM（避免阻塞事件循环）
             loop = asyncio.get_event_loop()
-            answer = await loop.run_in_executor(
-                None,
-                lambda: llm.chat(messages, temperature=0.6)
+
+            def _call_llm():
+                return llm.chat(messages, temperature=0.6)
+
+            answer = await asyncio.wait_for(
+                loop.run_in_executor(None, _call_llm),
+                timeout=300.0
             )
 
-            # 发送完整答案
+            # 将完整回答拆成小块发送，实现流式效果
+            chunk_size = 3
+            for i in range(0, len(answer), chunk_size):
+                chunk = answer[i:i+chunk_size]
+                yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
+                await asyncio.sleep(0.02)  # 让事件循环发送数据
+
             yield f"data: {json.dumps({'type': 'answer', 'content': answer})}\n\n"
             yield f"data: {json.dumps({'type': 'done', 'elapsed': f'{time.time()-start_time:.1f}s'})}\n\n"
 
         except Exception as e:
-            logger.error(f"[CHAT-STREAM] 错误：{str(e)}")
+            import traceback
+            logger.error(f"[CHAT-STREAM] 错误：{str(e)}\n{traceback.format_exc()}")
             yield f"data: {json.dumps({'type': 'error', 'content': f'处理出错：{str(e)[:50]}'})}\n\n"
 
     return StreamingResponse(
@@ -437,6 +448,92 @@ async def api_register(req: AuthRequest):
 @app.post("/api/login")
 async def api_login(req: AuthRequest):
     return login_user(req.username, req.password)
+
+
+# ==================== 上传 PDF ====================
+
+import tempfile
+
+
+@app.post("/api/upload")
+async def api_upload_pdf(file: UploadFile = File(...)):
+    """上传 PDF 并自动索引到知识库"""
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="只支持 PDF 文件")
+
+    # 保存到 PDF 目录
+    os.makedirs(PDF_DIR, exist_ok=True)
+    save_path = os.path.join(PDF_DIR, file.filename)
+
+    content = await file.read()
+    if len(content) == 0:
+        raise HTTPException(status_code=400, detail="文件为空")
+
+    with open(save_path, "wb") as f:
+        f.write(content)
+
+    logger.info(f"[UPLOAD] 已保存：{save_path} ({len(content)} bytes)")
+
+    # 处理并索引
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, lambda: process_pdf(save_path))
+        count = vector_store.add_pdf_chunks(result)
+        vector_store.save()
+        logger.info(f"[UPLOAD] 已索引：{file.filename} → {count} 个片段")
+        return {
+            "success": True,
+            "filename": file.filename,
+            "size": len(content),
+            "chunks_added": count,
+            "total_documents": vector_store.count()
+        }
+    except Exception as e:
+        logger.error(f"[UPLOAD] 索引失败：{e}")
+        raise HTTPException(status_code=500, detail=f"PDF 处理失败：{str(e)[:100]}")
+
+
+@app.get("/api/documents")
+async def api_get_documents():
+    """获取知识库中所有文档列表"""
+    docs = vector_store.list_documents()
+    return {"documents": docs, "total": len(docs)}
+
+
+# ==================== 管理员 API ====================
+
+def _require_admin(authorization: Optional[str] = Header(None)):
+    user = get_current_user(authorization)
+    if user is None:
+        raise HTTPException(status_code=401, detail="未登录")
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+    return user
+
+
+class RoleUpdateRequest(BaseModel):
+    user_id: int
+    role: str
+
+
+@app.get("/api/admin/users")
+async def api_admin_get_users(admin: dict = Depends(_require_admin)):
+    from user_manager import get_all_users
+    users = get_all_users()
+    # 隐藏密码哈希等敏感信息
+    return {"users": users, "total": len(users)}
+
+
+@app.put("/api/admin/users/role")
+async def api_admin_update_role(req: RoleUpdateRequest, admin: dict = Depends(_require_admin)):
+    from user_manager import update_user_role
+    return update_user_role(req.user_id, req.role)
+
+
+@app.delete("/api/admin/users/{user_id}")
+async def api_admin_delete_user(user_id: int, admin: dict = Depends(_require_admin)):
+    from user_manager import delete_user
+    return delete_user(user_id)
 
 
 # ==================== 对话管理 API ====================

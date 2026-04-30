@@ -32,8 +32,9 @@ input,button{font-family:inherit}
 .sidebar-hd{padding:16px;border-bottom:1px solid rgba(255,255,255,.1)}
 .sidebar-user{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
 .sidebar-user span{font-size:.9em;opacity:.8}
-.logout-btn,.del-btn{background:transparent;border:1px solid rgba(255,255,255,.3);color:#fff;padding:4px 12px;border-radius:8px;cursor:pointer;font-size:.8em;white-space:nowrap}
-.logout-btn:hover,.del-btn:hover{background:rgba(255,255,255,.1)}
+.logout-btn,.del-btn,.admin-btn{background:transparent;border:1px solid rgba(255,255,255,.3);color:#fff;padding:4px 12px;border-radius:8px;cursor:pointer;font-size:.8em;white-space:nowrap}
+.admin-btn{border-color:rgba(255,200,50,.4);color:#ffd700;margin-left:4px}
+.logout-btn:hover,.admin-btn:hover{background:rgba(255,255,255,.1)}
 .del-btn{border-color:rgba(255,80,80,.4);color:#ff6b6b;padding:2px 8px;font-size:.7em;flex-shrink:0}
 .del-btn:hover{background:rgba(255,80,80,.15)}
 .new-chat-btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:10px;border:1px dashed rgba(255,255,255,.3);border-radius:10px;background:transparent;color:#fff;cursor:pointer;font-size:.9em;margin-top:8px}
@@ -81,6 +82,36 @@ input,button{font-family:inherit}
 .dot:nth-child(2){animation-delay:-.16s}
 .dot:nth-child(3){animation-delay:-.32s}
 @keyframes bounce{0%,80%,100%{transform:scale(0)}40%{transform:scale(1)}}
+
+/* Streaming cursor */
+.stream-cursor{animation:blink 1s step-end infinite;font-weight:bold;color:#667eea}
+@keyframes blink{50%{opacity:0}}
+
+/* Admin modal */
+.modal-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);z-index:1000;justify-content:center;align-items:center}
+.modal-overlay.active{display:flex}
+.modal{background:#fff;border-radius:16px;padding:24px;width:700px;max-width:90vw;max-height:80vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+.modal h2{margin-bottom:16px;color:#333;font-size:1.2em}
+.modal table{width:100%;border-collapse:collapse;margin-bottom:16px}
+.modal th,.modal td{padding:8px 10px;text-align:left;border-bottom:1px solid #eee;font-size:.85em}
+.modal th{background:#f5f7fb;font-weight:600;color:#666}
+.modal td{color:#333}
+.modal .badge{padding:2px 8px;border-radius:10px;font-size:.75em;font-weight:600}
+.badge.admin{background:rgba(255,200,50,.2);color:#b8860b}
+.badge.user{background:rgba(102,126,234,.15);color:#667eea}
+.modal .btn-sm{padding:4px 12px;border:none;border-radius:6px;cursor:pointer;font-size:.8em;margin:0 2px}
+.btn-sm.danger{background:#e74c3c;color:#fff}
+.btn-sm.promote{background:#27ae60;color:#fff}
+.btn-sm.demote{background:#f39c12;color:#fff}
+.modal-close{float:right;background:transparent;border:none;font-size:1.2em;cursor:pointer;color:#999;padding:0 4px}
+.modal-close:hover{color:#333}
+.modal .empty-row{text-align:center;padding:30px;color:#999}
+
+/* Admin status bar */
+.admin-bar{display:none;background:#ffd700;color:#333;padding:6px 16px;font-size:.8em;text-align:center;font-weight:500}
+.admin-bar.active{display:block}
+.admin-bar a{color:#333;font-weight:700;cursor:pointer;text-decoration:underline}
+#upBtn:disabled{opacity:.5;cursor:not-allowed}
 </style>
 </head>
 <body>
@@ -113,13 +144,17 @@ input,button{font-family:inherit}
     <div class="sidebar-hd">
       <div class="sidebar-user">
         <span id="userLabel">-</span>
-        <button class="logout-btn" onclick="logout()">退出</button>
+        <div style="display:flex;gap:4px">
+          <button class="admin-btn" id="adminBtn" onclick="openAdmin()" style="display:none">⚙️ 管理</button>
+          <button class="logout-btn" onclick="logout()">退出</button>
+        </div>
       </div>
       <button class="new-chat-btn" onclick="newConv()">[+] 新建对话</button>
     </div>
     <div class="conv-list" id="convList"></div>
   </div>
   <div class="main">
+    <div class="admin-bar" id="adminBar"><span id="adminBarText">管理员模式</span></div>
     <div class="chat-hd" id="chatTitle">选择对话</div>
     <div class="msgs" id="msgs">
       <div class="empty"><p>输入问题开始对话</p></div>
@@ -131,15 +166,43 @@ input,button{font-family:inherit}
   </div>
 </div>
 
+<!-- Admin Modal -->
+<div class="modal-overlay" id="adminModal">
+  <div class="modal" style="width:750px">
+    <button class="modal-close" onclick="closeAdmin()">✕</button>
+    
+    <h2>👤 用户管理</h2>
+    <div>
+      <table style="width:100%;border-collapse:collapse;margin-bottom:16px">
+        <thead><tr><th style="padding:8px 10px;text-align:left;border-bottom:1px solid #eee;background:#f5f7fb;font-weight:600;color:#666;font-size:.85em">ID</th><th style="padding:8px 10px;text-align:left;border-bottom:1px solid #eee;background:#f5f7fb;font-weight:600;color:#666;font-size:.85em">用户名</th><th style="padding:8px 10px;text-align:left;border-bottom:1px solid #eee;background:#f5f7fb;font-weight:600;color:#666;font-size:.85em">角色</th><th style="padding:8px 10px;text-align:left;border-bottom:1px solid #eee;background:#f5f7fb;font-weight:600;color:#666;font-size:.85em">注册时间</th><th style="padding:8px 10px;text-align:left;border-bottom:1px solid #eee;background:#f5f7fb;font-weight:600;color:#666;font-size:.85em">操作</th></tr></thead>
+        <tbody id="adminUserList"><tr><td class="empty-row" colspan="5" style="text-align:center;padding:30px;color:#999">加载中...</td></tr></tbody>
+      </table>
+    </div>
+    
+    <hr style="margin:16px 0;border:none;border-top:1px solid #eee">
+    
+    <h2>📄 知识库文档 <span id="docCount" style="font-size:.7em;color:#999;font-weight:400"></span></h2>
+    <div style="margin:10px 0;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <input type="file" id="uploadFile" accept=".pdf" style="flex:1;min-width:180px;padding:6px;border:1px solid #ddd;border-radius:8px;font-size:.85em">
+      <button onclick="uploadPDF()" id="upBtn" style="padding:8px 20px;border:none;border-radius:8px;background:#27ae60;color:#fff;font-weight:600;cursor:pointer;font-size:.85em">📤 上传并索引</button>
+      <button onclick="loadDocList()" style="padding:8px 16px;border:1px solid #ddd;border-radius:8px;background:#fff;color:#666;cursor:pointer;font-size:.85em">刷新</button>
+    </div>
+    <div id="uploadStatus" style="font-size:.85em;margin-bottom:8px;color:#666;min-height:20px"></div>
+    <div id="docList" style="max-height:250px;overflow-y:auto;font-size:.82em;border:1px solid #eee;border-radius:8px;padding:4px;background:#fafafa">
+      <div style="text-align:center;padding:20px;color:#999">加载中...</div>
+    </div>
+  </div>
+</div>
+
 <script>
-var T='rag_token',U='rag_usr',tok=localStorage.getItem(T),usr=localStorage.getItem(U),cid=null,convs=[],loading=false;
+var T='rag_token',U='rag_usr',R='rag_role',tok=localStorage.getItem(T),usr=localStorage.getItem(U),role=localStorage.getItem(R)||'user',cid=null,convs=[],loading=false;
 
 function hdr(){return tok?{'Content-Type':'application/json','Authorization':'Bearer '+tok}:{'Content-Type':'application/json'}}
 
 async function api(url,opts){
   try{
     var r=await fetch(url,Object.assign({},opts,{headers:Object.assign(hdr(),(opts&&opts.headers)||{})}));
-    if(r.status==401){localStorage.removeItem(T);localStorage.removeItem(U);location.reload()}
+    if(r.status==401){localStorage.removeItem(T);localStorage.removeItem(U);localStorage.removeItem(R);location.reload()}
     return r.json()
   }catch(e){return{error:e.message}}
 }
@@ -165,7 +228,16 @@ async function login(){
   document.getElementById('lbtn').disabled=true
   var d=await api('/api/login',{method:'POST',body:JSON.stringify({username:u,password:p})})
   document.getElementById('lbtn').disabled=false
-  if(d.success){localStorage.setItem(T,d.token);localStorage.setItem(U,u);tok=d.token;usr=u;init()}
+  if(d.success){
+    // 解析 JWT 获取角色
+    var _role='user'
+    try{
+      var parts=d.token.split('.')
+      if(parts.length==3){var p=JSON.parse(atob(parts[1].replace(/-/g,'+').replace(/_/g,'/')));_role=p.role||'user'}
+    }catch(e){}
+    localStorage.setItem(T,d.token);localStorage.setItem(U,u);localStorage.setItem(R,_role)
+    tok=d.token;usr=u;role=_role;init()
+  }
   else showErr('lmsg',d.message||'失败')
 }
 
@@ -188,7 +260,7 @@ function switchTab(t){
 }
 
 function logout(){
-  localStorage.removeItem(T);localStorage.removeItem(U);tok=null;usr=null;cid=null
+  localStorage.removeItem(T);localStorage.removeItem(U);localStorage.removeItem(R);tok=null;usr=null;cid=null;role='user'
   document.getElementById('authPage').style.display='flex'
   document.getElementById('chatPage').classList.remove('active')
 }
@@ -229,12 +301,12 @@ async function sel(id){
   try{
     cid=id;loading=true
     document.getElementById('sbtn').disabled=true
-    var msgs=await api('/api/conversations/'+id+'/messages')
+    var m=await api('/api/conversations/'+id+'/messages')
     var el=document.getElementById('msgs'),c=convs.find(function(x){return x.id==id})
     document.getElementById('chatTitle').textContent=c?c.title:'对话'
-    if(!msgs||!msgs.length){el.innerHTML='<div class="empty"><p>空对话</p></div>';loading=false;document.getElementById('sbtn').disabled=false;loadConvs();return}
-    el.innerHTML=msgs.map(function(m){
-      return '<div class="msg '+m.role+'"><div class="bubble">'+(m.role=='user'?esc(m.content):renderMD(m.content))+'</div></div>'
+    if(!m||!m.length){el.innerHTML='<div class="empty"><p>空对话</p></div>';loading=false;document.getElementById('sbtn').disabled=false;loadConvs();return}
+    el.innerHTML=m.map(function(msg){
+      return '<div class="msg '+msg.role+'"><div class="bubble">'+(msg.role=='user'?esc(msg.content):renderMD(msg.content))+'</div></div>'
     }).join('')
     el.scrollTop=el.scrollHeight
   }catch(e){console.error(e)}
@@ -263,16 +335,20 @@ async function send(){
   el.innerHTML+='<div class="msg user"><div class="bubble">'+esc(q)+'</div></div>'
   el.scrollTop=el.scrollHeight
 
+  // 创建流式输出的消息容器
   var td=document.createElement('div');td.className='msg assistant'
-  td.innerHTML='<div class="typing"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>'
+  var bubble=document.createElement('div');bubble.className='bubble';bubble.id='streamBubble'
+  bubble.innerHTML='<span class="dot"></span><span class="dot"></span><span class="dot"></span>'
+  td.appendChild(bubble)
   el.appendChild(td);el.scrollTop=el.scrollHeight
 
   var msgs=await api('/api/conversations/'+cid+'/messages')
   var hist=msgs.filter(function(m){return m.role!='system'}).slice(0,-1).map(function(m){return{role:m.role,content:m.content}})
-  var answer='',sources=[]
+  var fullAnswer='',sources=[],streamText='',streamDone=false
 
   try{
     var resp=await fetch('/api/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q,history:hist,top_k:5})})
+    if(!resp.body){bubble.innerHTML='<p>网络错误</p>';streamDone=true;return}
     var reader=resp.body.getReader(),dec=new TextDecoder(),buf=''
     while(true){
       var r=await reader.read();if(r.done)break
@@ -282,17 +358,35 @@ async function send(){
         var line=lines[i];if(!line.startsWith('data: '))continue
         try{
           var dt=JSON.parse(line.slice(6))
-          if(dt.type=='sources')sources=dt.content
-          else if(dt.type=='answer'){answer=dt.content;updAns(answer,sources)}
+          if(dt.type=='sources'){sources=dt.content}
+          else if(dt.type=='token'){
+            streamText+=dt.content
+            // 实时更新：使用纯文本显示（流式阶段不做markdown渲染以保证速度）
+            bubble.innerHTML=esc(streamText)+'<span class="stream-cursor">▌</span>'
+            el.scrollTop=el.scrollHeight
+          }
+          else if(dt.type=='answer'){
+            fullAnswer=dt.content
+            // 渲染为 Markdown
+            bubble.innerHTML=renderMD(fullAnswer)
+            if(sources&&sources.length>0){
+              var srcDiv=document.createElement('div');srcDiv.className='src-box'
+              srcDiv.textContent='📚 '+sources.join(', ')
+              td.appendChild(srcDiv)
+            }
+            el.scrollTop=el.scrollHeight
+            streamDone=true
+          }
         }catch(e){}
       }
     }
   }catch(e){
-    var ty=el.querySelector('.typing');if(ty)ty.parentElement.innerHTML='<div class="bubble">网络出错</div>'
+    if(!streamDone)bubble.innerHTML='<p>网络连接出错</p>'
   }
 
-  if(answer){
-    await api('/api/conversations/'+cid+'/messages',{method:'POST',body:JSON.stringify({role:'assistant',content:answer})})
+  // 保存助手消息
+  if(fullAnswer){
+    await api('/api/conversations/'+cid+'/messages',{method:'POST',body:JSON.stringify({role:'assistant',content:fullAnswer})})
     msgs=await api('/api/conversations/'+cid+'/messages')
     el.innerHTML=msgs.map(function(m){
       return '<div class="msg '+m.role+'"><div class="bubble">'+(m.role=='user'?esc(m.content):renderMD(m.content))+'</div></div>'
@@ -309,16 +403,119 @@ async function send(){
   loading=false;document.getElementById('sbtn').disabled=false
 }
 
-function updAns(text,sources){
-  var t=document.querySelector('.typing');if(!t)return
-  var p=t.parentElement
-  p.innerHTML='<div class="bubble">'+renderMD(text)+'</div>'
-  if(sources&&sources.length>0)p.innerHTML+='<div class="src-box">📚 '+sources.join(', ')+'</div>'
-  document.getElementById('msgs').scrollTop=document.getElementById('msgs').scrollHeight
+/* Admin */
+function openAdmin(){
+  document.getElementById('adminModal').classList.add('active')
+  loadAdminUsers()
+  loadDocList()
+}
+
+function closeAdmin(){
+  document.getElementById('adminModal').classList.remove('active')
+}
+
+async function loadAdminUsers(){
+  var el=document.getElementById('adminUserList')
+  el.innerHTML='<tr><td class="empty-row" colspan="5">加载中...</td></tr>'
+  var d=await api('/api/admin/users')
+  if(!d||d.error||!d.users){el.innerHTML='<tr><td class="empty-row" colspan="5">加载失败</td></tr>';return}
+  el.innerHTML=d.users.map(function(u){
+    var badge='<span class="badge '+(u.role=='admin'?'admin':'user')+'">'+(u.role=='admin'?'管理员':'用户')+'</span>'
+    var btns=''
+    if(u.username!='admin'&&u.username!=usr){
+      if(u.role=='admin')
+        btns='<button class="btn-sm demote" onclick="changeRole('+u.id+',\'user\')">降为普通用户</button>'
+      else
+        btns='<button class="btn-sm promote" onclick="changeRole('+u.id+',\'admin\')">提升为管理员</button>'
+      btns+='<button class="btn-sm danger" onclick="delUser('+u.id+',\''+u.username+'\')">删除</button>'
+    }else if(u.username=='admin'){
+      btns='<span style="color:#999;font-size:.8em">系统管理员</span>'
+    }else{
+      btns='<span style="color:#999;font-size:.8em">当前用户</span>'
+    }
+    return '<tr><td>'+u.id+'</td><td>'+esc(u.username)+'</td><td>'+badge+'</td><td style="font-size:.8em">'+u.created_at+'</td><td>'+btns+'</td></tr>'
+  }).join('')
+}
+
+async function changeRole(uid,newRole){
+  var label=newRole=='admin'?'提升为管理员':'降为普通用户'
+  if(!confirm('确认'+label+'？'))return
+  var d=await api('/api/admin/users/role',{method:'PUT',body:JSON.stringify({user_id:uid,role:newRole})})
+  if(d.success){loadAdminUsers()}
+  else alert(d.message||'操作失败')
+}
+
+async function delUser(uid,uname){
+  if(!confirm('确认删除用户 "'+uname+'"？\n该用户的所有对话将被同时删除！'))return
+  var d=await api('/api/admin/users/'+uid,{method:'DELETE'})
+  if(d.success){loadAdminUsers()}
+  else alert(d.message||'删除失败')
+}
+
+// 点击遮罩关闭
+document.getElementById('adminModal').onclick=function(e){
+  if(e.target==this)closeAdmin()
+}
+
+/* Upload & Documents */
+async function uploadPDF(){
+  var inp=document.getElementById('uploadFile')
+  var file=inp.files[0]
+  if(!file){alert('请选择PDF文件');return}
+  var btn=document.getElementById('upBtn'),st=document.getElementById('uploadStatus')
+  btn.disabled=true;btn.textContent='⏳ 处理中...'
+  st.innerHTML='<span style="color:#666">正在上传 '+file.name+' ('+Math.round(file.size/1024)+' KB)...</span>'
+  var fd=new FormData()
+  fd.append('file',file)
+  try{
+    var r=await fetch('/api/upload',{method:'POST',body:fd})
+    var d=await r.json()
+    if(r.ok && d.success){
+      st.innerHTML='<span style="color:#27ae60">✅ '+file.name+' 索引成功！新增 '+d.chunks_added+' 个片段，知识库共 '+d.total_documents+' 篇文档</span>'
+      loadDocList()
+      inp.value=''
+    }else{
+      st.innerHTML='<span style="color:#e74c3c">❌ 失败：'+(d.detail||'未知错误')+'</span>'
+    }
+  }catch(e){
+    st.innerHTML='<span style="color:#e74c3c">❌ 网络错误：'+e.message+'</span>'
+  }
+  btn.disabled=false;btn.textContent='📤 上传并索引'
+}
+
+async function loadDocList(){
+  var el=document.getElementById('docList'),cnt=document.getElementById('docCount')
+  el.innerHTML='<div style="text-align:center;padding:16px;color:#999">加载中...</div>'
+  var d=await api('/api/documents')
+  if(!d||d.error||!d.documents){
+    el.innerHTML='<div style="text-align:center;padding:16px;color:#999">获取失败</div>'
+    return
+  }
+  cnt.textContent='（共 '+d.total+' 篇）'
+  if(d.documents.length==0){
+    el.innerHTML='<div style="text-align:center;padding:16px;color:#999">暂无文档</div>'
+    return
+  }
+  el.innerHTML=d.documents.map(function(name,idx){
+    var icon=name.endsWith('.pdf')?'📄':'📋'
+    return '<div style="padding:4px 8px;border-bottom:1px solid #f0f0f0;font-size:.85em;color:#555">'+
+      '<span style="display:inline-block;width:24px;text-align:right;color:#ccc;margin-right:8px;font-size:.8em">'+(idx+1)+'</span>'+
+      icon+' '+esc(name)+'</div>'
+  }).join('')
 }
 
 async function init(){
+  // 自动加载文档列表（打开 admin 时再加载）
   document.getElementById('userLabel').textContent=usr||'用户'
+  // 管理员按钮和提示
+  if(role=='admin'){
+    document.getElementById('adminBtn').style.display='inline-block'
+    document.getElementById('adminBar').classList.add('active')
+    document.getElementById('adminBarText').textContent='👑 管理员模式 | 用户名: '+usr
+  }else{
+    document.getElementById('adminBtn').style.display='none'
+    document.getElementById('adminBar').classList.remove('active')
+  }
   document.getElementById('authPage').style.display='none'
   document.getElementById('chatPage').classList.add('active')
   await loadConvs()

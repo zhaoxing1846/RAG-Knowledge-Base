@@ -122,7 +122,7 @@ class LLMClient:
         max_tokens: int = 2000,
         timeout: int = 300  # 增加到 5 分钟
     ) -> str:
-        """对话补全"""
+        """对话补全（非流式，返回完整文本）"""
         url = f"{self.api_base}/chat/completions"
 
         response = httpx.post(
@@ -132,7 +132,8 @@ class LLMClient:
                 "model": self.model,
                 "messages": messages,
                 "temperature": temperature,
-                "max_tokens": max_tokens
+                "max_tokens": max_tokens,
+                "stream": False
             },
             timeout=timeout
         )
@@ -142,6 +143,51 @@ class LLMClient:
 
         data = response.json()
         return data["choices"][0]["message"]["content"]
+
+    def chat_stream(
+        self,
+        messages: List[dict],
+        temperature: float = 0.7,
+        max_tokens: int = 2000,
+        timeout: int = 300
+    ) -> str:
+        """流式对话补全，逐 chunk 返回文本内容"""
+        url = f"{self.api_base}/chat/completions"
+
+        with httpx.stream(
+            "POST",
+            url,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            json={
+                "model": self.model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stream": True
+            },
+            timeout=timeout
+        ) as response:
+            if response.status_code != 200:
+                raise Exception(f"LLM API error: {response.status_code}")
+            for line in response.iter_lines():
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith("data: "):
+                    data_str = line[6:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    if data_str:
+                        try:
+                            chunk = json.loads(data_str)
+                            choices = chunk.get("choices")
+                            if choices and len(choices) > 0:
+                                delta = choices[0].get("delta", {})
+                                content = delta.get("content", "")
+                                if content:
+                                    yield content
+                        except (json.JSONDecodeError, IndexError, ValueError):
+                            pass
 
     def generate_answer(
         self,
