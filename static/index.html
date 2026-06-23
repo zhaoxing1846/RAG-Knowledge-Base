@@ -346,8 +346,12 @@ async function send(){
   var hist=msgs.filter(function(m){return m.role!='system'}).slice(0,-1).map(function(m){return{role:m.role,content:m.content}})
   var fullAnswer='',sources=[],streamText='',streamDone=false
 
+  // 创建 AbortController，5分钟超时
+  var ac=new AbortController()
+  var fetchTimeout=setTimeout(function(){ac.abort()},300000)
   try{
-    var resp=await fetch('/api/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q,history:hist,top_k:5})})
+    var resp=await fetch('/api/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q,history:hist,top_k:5}),signal:ac.signal})
+    clearTimeout(fetchTimeout)
     if(!resp.body){bubble.innerHTML='<p>网络错误</p>';streamDone=true;return}
     var reader=resp.body.getReader(),dec=new TextDecoder(),buf=''
     while(true){
@@ -361,19 +365,13 @@ async function send(){
           if(dt.type=='sources'){sources=dt.content}
           else if(dt.type=='token'){
             streamText+=dt.content
-            // 实时更新：使用纯文本显示（流式阶段不做markdown渲染以保证速度）
-            bubble.innerHTML=esc(streamText)+'<span class="stream-cursor">▌</span>'
+            bubble.innerHTML=renderMD(streamText)+'<span class="stream-cursor">▌</span>'
             el.scrollTop=el.scrollHeight
           }
           else if(dt.type=='answer'){
             fullAnswer=dt.content
-            // 渲染为 Markdown
+            // 渲染为 Markdown（含来源文件附加内容）
             bubble.innerHTML=renderMD(fullAnswer)
-            if(sources&&sources.length>0){
-              var srcDiv=document.createElement('div');srcDiv.className='src-box'
-              srcDiv.textContent='📚 '+sources.join(', ')
-              td.appendChild(srcDiv)
-            }
             el.scrollTop=el.scrollHeight
             streamDone=true
           }
@@ -381,25 +379,57 @@ async function send(){
       }
     }
   }catch(e){
-    if(!streamDone)bubble.innerHTML='<p>网络连接出错</p>'
+    if(!streamDone && streamText){
+      // 流中断但已有部分内容，使用已收到的内容
+      fullAnswer = fullAnswer || streamText
+      bubble.innerHTML=renderMD(fullAnswer)
+      streamDone=true
+    }else if(!streamDone){
+      bubble.innerHTML='<p>网络连接出错</p>'
+    }
   }
 
-  // 保存助手消息
-  if(fullAnswer){
-    await api('/api/conversations/'+cid+'/messages',{method:'POST',body:JSON.stringify({role:'assistant',content:fullAnswer})})
-    msgs=await api('/api/conversations/'+cid+'/messages')
-    el.innerHTML=msgs.map(function(m){
-      return '<div class="msg '+m.role+'"><div class="bubble">'+(m.role=='user'?esc(m.content):renderMD(m.content))+'</div></div>'
-    }).join('')
-    el.scrollTop=el.scrollHeight
-    // auto title
-    if(msgs.length<=2){
+  // 处理 buf 残留（最后一个 chunk 的尾部未处理的数据）
+  if(buf && buf.startsWith('data: ')){
+    try{
+      var dt=JSON.parse(buf.slice(6))
+      if(dt.type=='token'){
+        streamText+=dt.content
+        bubble.innerHTML=renderMD(streamText)
+      }else if(dt.type=='answer'){
+        fullAnswer=dt.content
+        bubble.innerHTML=renderMD(fullAnswer)
+        streamDone=true
+      }
+    }catch(e){}
+  }
+
+  // 确定最终答案
+  var finalAnswer = fullAnswer || streamText
+
+  if(!finalAnswer || !finalAnswer.trim()){
+    loading=false;document.getElementById('sbtn').disabled=false
+    return
+  }
+
+  // 保存到后端（仅写入，不再全量重绘）
+  await api('/api/conversations/'+cid+'/messages',{method:'POST',body:JSON.stringify({role:'assistant',content:finalAnswer})})
+
+  // 更新气泡内容，移除闪烁光标
+  bubble.innerHTML=renderMD(finalAnswer)
+  el.scrollTop=el.scrollHeight
+
+  // auto title（基于第一次对话）
+  try{
+    var msgsAfter=await api('/api/conversations/'+cid+'/messages')
+    if(msgsAfter.length<=2){
       var title=q.substring(0,30)+(q.length>30?'...':'')
       await api('/api/conversations/'+cid,{method:'PATCH',body:JSON.stringify({title:title})})
       document.getElementById('chatTitle').textContent=title
     }
-    loadConvs()
-  }
+  }catch(e){}
+
+  loadConvs()
   loading=false;document.getElementById('sbtn').disabled=false
 }
 
