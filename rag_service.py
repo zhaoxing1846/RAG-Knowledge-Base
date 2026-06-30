@@ -576,6 +576,17 @@ def _require_user(authorization: Optional[str] = Header(None)):
     return user
 
 
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
+
+
+@app.post("/api/change-password")
+async def api_change_password(req: ChangePasswordRequest, user: dict = Depends(_require_user)):
+    from user_manager import change_password as cp
+    return cp(user["user_id"], req.old_password, req.new_password)
+
+
 @app.get("/api/conversations")
 async def api_get_conversations(user: dict = Depends(_require_user)):
     return get_conversations(user["user_id"])

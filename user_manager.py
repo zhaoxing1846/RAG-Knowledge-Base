@@ -236,6 +236,32 @@ def update_user_role(user_id: int, new_role: str) -> dict:
         conn.close()
 
 
+def change_password(user_id: int, old_password: str, new_password: str) -> dict:
+    """修改密码"""
+    if not old_password or not new_password:
+        return {"success": False, "message": "旧密码和新密码都不能为空"}
+    if len(new_password) < 4:
+        return {"success": False, "message": "新密码长度不能少于4位"}
+
+    conn = _get_db()
+    try:
+        row = conn.execute(
+            "SELECT password_hash FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        if row is None:
+            return {"success": False, "message": "用户不存在"}
+        if _hash_password(old_password) != row["password_hash"]:
+            return {"success": False, "message": "旧密码错误"}
+        if old_password == new_password:
+            return {"success": False, "message": "新密码不能与旧密码相同"}
+        new_hash = _hash_password(new_password)
+        conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_hash, user_id))
+        conn.commit()
+        return {"success": True, "message": "密码修改成功"}
+    finally:
+        conn.close()
+
+
 def delete_user(user_id: int) -> dict:
     """删除用户"""
     conn = _get_db()

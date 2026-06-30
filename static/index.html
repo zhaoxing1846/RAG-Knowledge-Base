@@ -112,6 +112,21 @@ input,button{font-family:inherit}
 .admin-bar.active{display:block}
 .admin-bar a{color:#333;font-weight:700;cursor:pointer;text-decoration:underline}
 #upBtn:disabled{opacity:.5;cursor:not-allowed}
+
+/* Change password modal */
+.cp-modal{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.4);z-index:1001;justify-content:center;align-items:center}
+.cp-modal.active{display:flex}
+.cp-form{background:#fff;border-radius:16px;padding:28px;width:360px;max-width:90vw}
+.cp-form h3{margin:0 0 16px;color:#333;font-size:1.05em}
+.cp-form input{width:100%;padding:10px 14px;border:2px solid #eee;border-radius:10px;font-size:.95em;margin-bottom:10px;outline:none;box-sizing:border-box}
+.cp-form input:focus{border-color:#667eea}
+.cp-form .btn-row{display:flex;gap:8px;margin-top:6px}
+.cp-form button{flex:1;padding:10px;border:none;border-radius:10px;font-size:.95em;cursor:pointer;font-weight:600}
+.cp-form button.cancel{background:#f0f0f0;color:#666}
+.cp-form button.confirm{background:linear-gradient(135deg,#667eea,#764ba2);color:#fff}
+.cp-form .cp-msg{font-size:.85em;margin-top:8px;text-align:center;display:none}
+.cp-form .cp-msg.ok{color:#27ae60}
+.cp-form .cp-msg.err{color:#e74c3c}
 </style>
 </head>
 <body>
@@ -144,8 +159,9 @@ input,button{font-family:inherit}
     <div class="sidebar-hd">
       <div class="sidebar-user">
         <span id="userLabel">-</span>
-        <div style="display:flex;gap:4px">
+        <div style="display:flex;gap:4px;flex-wrap:wrap">
           <button class="admin-btn" id="adminBtn" onclick="openAdmin()" style="display:none">⚙️ 管理</button>
+          <button onclick="openCpModal()" style="background:transparent;border:1px solid rgba(255,255,255,.3);color:#fff;padding:4px 10px;border-radius:8px;font-size:.8em;cursor:pointer">🔑 修改密码</button>
           <button class="logout-btn" onclick="logout()">退出</button>
         </div>
       </div>
@@ -163,6 +179,21 @@ input,button{font-family:inherit}
       <input type="text" id="inp" placeholder="输入问题..." onkeydown="if(event.key=='Enter')send()">
       <button id="sbtn" onclick="send()">发送</button>
     </div>
+  </div>
+</div>
+
+<!-- 修改密码 Modal -->
+<div class="cp-modal" id="cpModal">
+  <div class="cp-form">
+    <h3>🔑 修改密码</h3>
+    <input type="password" id="cpOld" placeholder="旧密码" autocomplete="current-password">
+    <input type="password" id="cpNew" placeholder="新密码（至少4位）" autocomplete="new-password">
+    <input type="password" id="cpNew2" placeholder="确认新密码" autocomplete="new-password">
+    <div class="btn-row">
+      <button class="cancel" onclick="closeCpModal()">取消</button>
+      <button class="confirm" onclick="submitCp()">确认修改</button>
+    </div>
+    <div class="cp-msg" id="cpMsg"></div>
   </div>
 </div>
 
@@ -263,6 +294,40 @@ function logout(){
   localStorage.removeItem(T);localStorage.removeItem(U);localStorage.removeItem(R);tok=null;usr=null;cid=null;role='user'
   document.getElementById('authPage').style.display='flex'
   document.getElementById('chatPage').classList.remove('active')
+}
+
+function openCpModal(){
+  document.getElementById('cpOld').value=''
+  document.getElementById('cpNew').value=''
+  document.getElementById('cpNew2').value=''
+  document.getElementById('cpMsg').style.display='none'
+  document.getElementById('cpModal').classList.add('active')
+  document.getElementById('cpOld').focus()
+}
+
+function closeCpModal(){
+  document.getElementById('cpModal').classList.remove('active')
+}
+
+async function submitCp(){
+  var oldP=document.getElementById('cpOld').value
+  var newP=document.getElementById('cpNew').value
+  var newP2=document.getElementById('cpNew2').value
+  var msg=document.getElementById('cpMsg')
+  if(!oldP||!newP){msg.textContent='请填写所有字段';msg.className='cp-msg err';msg.style.display='block';return}
+  if(newP!=newP2){msg.textContent='两次新密码不一致';msg.className='cp-msg err';msg.style.display='block';return}
+  if(newP.length<4){msg.textContent='新密码至少4位';msg.className='cp-msg err';msg.style.display='block';return}
+  var d=await api('/api/change-password',{method:'POST',body:JSON.stringify({old_password:oldP,new_password:newP})})
+  if(d.success){
+    msg.textContent='✅ 密码修改成功';msg.className='cp-msg ok';msg.style.display='block'
+    setTimeout(closeCpModal,1200)
+  }else{
+    msg.textContent='❌ '+(d.message||'修改失败');msg.className='cp-msg err';msg.style.display='block'
+  }
+}
+
+document.getElementById('cpModal').onclick=function(e){
+  if(e.target==this)closeCpModal()
 }
 
 /* Chat */
