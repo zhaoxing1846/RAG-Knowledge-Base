@@ -19,6 +19,9 @@ import asyncio
 import time
 import logging
 import json
+import queue
+import threading
+import re
 from typing import List, Optional
 from fastapi import FastAPI, HTTPException, Depends, Header, UploadFile, File
 from fastapi.staticfiles import StaticFiles
@@ -261,20 +264,25 @@ async def chat(req: ChatRequest):
         top_hits = [hits[r["index"]] for r in rerank_results]
         logger.info(f"[CHAT] Rerank 完成：{time.time()-t1:.2f}s")
         
-        # 提取上下文
+        # 提取上下文（含来源去重）
         contexts = [h["text"] for h in top_hits]
-        sources = list(set(h["metadata"].get("source", "unknown") for h in top_hits))
-        
+        seen_files = set()
+        unique_sources = []
+        context_items = []
+        for i, (ctx, hit) in enumerate(zip(contexts, top_hits)):
+            src = hit["metadata"].get("source", "未知文件")
+            ref_key = f"[{src}]"
+            if src not in seen_files:
+                seen_files.add(src)
+                unique_sources.append(src)
+            context_items.append(f"{ref_key}\n{ctx}")
+        context_text = "\n\n".join(context_items)
+
         # 构建系统提示
         system_prompt = """你是一个学术研究助手，专门回答关于智能嗅觉、高通量筛选、纳米材料等领域的问题。
 请基于提供的参考文献内容回答问题。如果参考文献中没有相关信息，请诚实说明。
-回答要清晰、专业，必要时可以引用来源（如 [文档名]）。
+回答要清晰、专业。回答中引用来源时，使用文件名格式如 [文件名.pdf] 来标注。
 如果是追问，请结合之前的对话上下文来理解用户意图。"""
-        
-        context_text = "\n\n".join([
-            f"[参考文献{i+1}]\n{ctx}"
-            for i, ctx in enumerate(contexts)
-        ])
         
         # 构建消息列表
         messages = [{"role": "system", "content": system_prompt}]
@@ -308,18 +316,22 @@ async def chat(req: ChatRequest):
                 status_code=504,
                 content={
                     "answer": "抱歉，回答生成超时。问题比较复杂，请尝试简化问题或分步提问。",
-                    "sources": sources,
+                    "sources": unique_sources,
                     "timeout": True
                 },
                 headers={"X-Elapsed-Time": f"{time.time()-start_time:.1f}s"}
             )
-        
+
+        answer = re.sub(r'</?br\s*/?>', '  \n', answer)
+        source_lines = [f"- {s}" for s in unique_sources]
+        answer += f"\n\n📄 **来源文件**\n" + "\n".join(source_lines)
+
         total_time = time.time() - start_time
         logger.info(f"[CHAT] 请求完成：总耗时={total_time:.2f}s")
-        
+
         return {
             "answer": answer,
-            "sources": sources,
+            "sources": unique_sources,
             "elapsed_time": f"{total_time:.2f}s"
         }
 
@@ -335,40 +347,41 @@ async def chat(req: ChatRequest):
 
 @app.post("/api/chat/stream")
 async def chat_stream(req: ChatRequest):
-    """流式对话 - 逐 token 流式输出"""
+    """流式对话 - 逐 token SSE 流式输出 + 引用标注"""
     start_time = time.time()
     logger.info(f"[CHAT-STREAM] 新请求：问题长度={len(req.question)}")
 
     async def generate():
         try:
-            # 搜索相关文档
             hits = vector_store.search(req.question, top_k=req.top_k * 2)
 
             if not hits:
                 yield f"data: {json.dumps({'type': 'error', 'content': '抱歉，知识库中没有找到与问题相关的内容。'})}\n\n"
                 return
 
-            # Rerank
             documents = [h["text"] for h in hits]
             rerank_results = reranker.rerank(req.question, documents, top_k=req.top_k)
             top_hits = [hits[r["index"]] for r in rerank_results]
 
             contexts = [h["text"] for h in top_hits]
-            sources = list(set(h["metadata"].get("source", "unknown") for h in top_hits))
+            seen_files = set()
+            unique_sources = []
+            context_items = []
+            for i, (ctx, hit) in enumerate(zip(contexts, top_hits)):
+                src = hit["metadata"].get("source", "未知文件")
+                ref_key = f"[{src}]"
+                if src not in seen_files:
+                    seen_files.add(src)
+                    unique_sources.append(src)
+                context_items.append(f"{ref_key}\n{ctx}")
+            context_text = "\n\n".join(context_items)
 
-            # 发送来源信息
-            yield f"data: {json.dumps({'type': 'sources', 'content': sources})}\n\n"
+            yield f"data: {json.dumps({'type': 'sources', 'content': unique_sources})}\n\n"
 
-            # 构建消息
             system_prompt = """你是一个学术研究助手，专门回答关于智能嗅觉、高通量筛选、纳米材料等领域的问题。
 请基于提供的参考文献内容回答问题。如果参考文献中没有相关信息，请诚实说明。
-回答要清晰、专业，必要时可以引用来源（如 [文档名]）。
+回答要清晰、专业。回答中引用来源时，使用文件名格式如 [文件名.pdf] 来标注。
 如果是追问，请结合之前的对话上下文来理解用户意图。"""
-
-            context_text = "\n\n".join([
-                f"[参考文献{i+1}]\n{ctx}"
-                for i, ctx in enumerate(contexts)
-            ])
 
             messages = [{"role": "system", "content": system_prompt}]
             for msg in req.history or []:
@@ -376,36 +389,43 @@ async def chat_stream(req: ChatRequest):
                     messages.append({"role": msg["role"], "content": msg["content"]})
             messages.append({
                 "role": "user",
-                "content": f"参考文献：\n{context_text}\n\n问题：{req.question}"
+                "content": f"背景资料：\n{context_text}\n\n问题：{req.question}"
             })
 
-            # 发送状态
             yield f"data: {json.dumps({'type': 'status', 'content': '正在生成回答...'})}\n\n"
 
-            # 在独立线程中调用 LLM（避免阻塞事件循环）
-            loop = asyncio.get_event_loop()
+            # 逐 token 流式输出（线程队列）
+            token_queue = queue.Queue()
 
-            def _call_llm():
-                return llm.chat(messages, temperature=0.6)
+            def _stream_worker():
+                for token in llm.chat_stream(messages, temperature=0.6):
+                    token_queue.put(token)
+                token_queue.put(None)
 
-            answer = await asyncio.wait_for(
-                loop.run_in_executor(None, _call_llm),
-                timeout=300.0
-            )
+            threading.Thread(target=_stream_worker, daemon=True).start()
 
-            # 将完整回答拆成小块发送，实现流式效果
-            chunk_size = 3
-            for i in range(0, len(answer), chunk_size):
-                chunk = answer[i:i+chunk_size]
-                yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
-                await asyncio.sleep(0.02)  # 让事件循环发送数据
+            full_answer_parts = []
+            while True:
+                token = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: token_queue.get()
+                )
+                if token is None:
+                    break
+                full_answer_parts.append(token)
+                yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+
+            answer = "".join(full_answer_parts)
+            answer = re.sub(r'</?br\s*/?>', '  \n', answer)
+
+            # 后端追加来源文件列表到末尾
+            source_lines = [f"- {s}" for s in unique_sources]
+            answer += f"\n\n📄 **来源文件**\n" + "\n".join(source_lines)
 
             yield f"data: {json.dumps({'type': 'answer', 'content': answer})}\n\n"
             yield f"data: {json.dumps({'type': 'done', 'elapsed': f'{time.time()-start_time:.1f}s'})}\n\n"
 
         except Exception as e:
-            import traceback
-            logger.error(f"[CHAT-STREAM] 错误：{str(e)}\n{traceback.format_exc()}")
+            logger.error(f"[CHAT-STREAM] 错误：{str(e)}")
             yield f"data: {json.dumps({'type': 'error', 'content': f'处理出错：{str(e)[:50]}'})}\n\n"
 
     return StreamingResponse(

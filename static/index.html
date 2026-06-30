@@ -412,23 +412,19 @@ async function send(){
     return
   }
 
-  // 保存到后端（仅写入，不再全量重绘）
+// 保存到后端
   await api('/api/conversations/'+cid+'/messages',{method:'POST',body:JSON.stringify({role:'assistant',content:finalAnswer})})
-
-  // 更新气泡内容，移除闪烁光标
-  bubble.innerHTML=renderMD(finalAnswer)
+  msgs=await api('/api/conversations/'+cid+'/messages')
+  el.innerHTML=msgs.map(function(m){
+    return '<div class="msg '+m.role+'"><div class="bubble">'+(m.role=='user'?esc(m.content):renderMD(m.content))+'</div></div>'
+  }).join('')
   el.scrollTop=el.scrollHeight
-
-  // auto title（基于第一次对话）
-  try{
-    var msgsAfter=await api('/api/conversations/'+cid+'/messages')
-    if(msgsAfter.length<=2){
-      var title=q.substring(0,30)+(q.length>30?'...':'')
-      await api('/api/conversations/'+cid,{method:'PATCH',body:JSON.stringify({title:title})})
-      document.getElementById('chatTitle').textContent=title
-    }
-  }catch(e){}
-
+  // auto title
+  if(msgs.length<=2){
+    var title=q.substring(0,30)+(q.length>30?'...':'')
+    await api('/api/conversations/'+cid,{method:'PATCH',body:JSON.stringify({title:title})})
+    document.getElementById('chatTitle').textContent=title
+  }
   loadConvs()
   loading=false;document.getElementById('sbtn').disabled=false
 }
